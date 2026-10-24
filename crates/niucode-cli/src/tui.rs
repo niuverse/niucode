@@ -2787,6 +2787,15 @@ fn render_tool_result(
     let body = output_body(summary.as_str(), output);
     if !body.is_empty() {
         if should_fold(&body, output.len()) {
+            if !ok {
+                for line in folded_error_tail(&body) {
+                    eprintln!(
+                        "{} {}",
+                        theme.dim(theme::BRANCH),
+                        theme.paint(Tone::Danger, clean_text(line))
+                    );
+                }
+            }
             eprintln!(
                 "{} {}",
                 theme.dim(theme::BRANCH),
@@ -2823,6 +2832,21 @@ fn output_body<'a>(summary: &str, output: &'a str) -> Vec<&'a str> {
 
 fn should_fold(lines: &[&str], bytes: usize) -> bool {
     lines.len() > TOOL_OUTPUT_FOLD_LINES || bytes > TOOL_OUTPUT_FOLD_BYTES
+}
+
+fn folded_error_tail<'a>(lines: &[&'a str]) -> Vec<&'a str> {
+    let mut tail: Vec<&'a str> = lines
+        .iter()
+        .copied()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && trimmed != "stdout:" && trimmed != "stderr:"
+        })
+        .rev()
+        .take(3)
+        .collect();
+    tail.reverse();
+    tail
 }
 
 fn human_bytes(bytes: usize) -> String {
@@ -2940,6 +2964,10 @@ mod tests {
         let long = vec!["line"; TOOL_OUTPUT_FOLD_LINES + 1];
         assert!(should_fold(&long, 10));
         assert!(should_fold(&["line"], TOOL_OUTPUT_FOLD_BYTES + 1));
+        assert_eq!(
+            folded_error_tail(&["stdout:", "step 1", "stderr:", "err 1", "err 2", "err 3", ""]),
+            vec!["err 1", "err 2", "err 3"]
+        );
     }
 
     #[test]

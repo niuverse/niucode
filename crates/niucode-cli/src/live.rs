@@ -348,7 +348,7 @@ pub async fn run(
                             running_tool = Some((name.clone(), Instant::now()));
                             status = format!("running {name}");
                         }
-                        RuntimeEvent::Agent(AgentEvent::ToolResult { name, ok, summary, .. }) => {
+                        RuntimeEvent::Agent(AgentEvent::ToolResult { name, ok, summary, output }) => {
                             tools_completed += 1;
                             streaming = false;
                             if let Some((started_name, since)) = running_tool.take() {
@@ -356,13 +356,17 @@ pub async fn run(
                             }
                             status = format!("{name} finished");
                             if !ok {
+                                let width = terminal.size().0;
                                 let line = crate::presentation::tool_result(
                                     &name,
                                     false,
                                     &summary,
-                                    terminal.size().0,
+                                    width,
                                 );
                                 transcript.print(&mut terminal, view.is_some(), line)?;
+                                if let Some(tail) = crate::presentation::tool_error_tail(&summary, &output, width) {
+                                    transcript.print(&mut terminal, view.is_some(), tail)?;
+                                }
                             }
                         }
                         RuntimeEvent::Agent(AgentEvent::Warning(message)) | RuntimeEvent::Notice(message) => {

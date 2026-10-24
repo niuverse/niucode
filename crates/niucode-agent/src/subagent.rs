@@ -558,11 +558,7 @@ fn summarize(text: &str) -> String {
 fn render_outcomes(outcomes: &[SubagentOutcome]) -> String {
     let mut rendered = format!("subagent: {} task(s)\n", outcomes.len());
     for (index, outcome) in outcomes.iter().enumerate() {
-        let cache_pct = if outcome.usage.input_tokens > 0 {
-            (outcome.usage.cached_tokens.saturating_mul(100)) / outcome.usage.input_tokens
-        } else {
-            0
-        };
+        let cache_pct = outcome.usage.cache_hit_percent();
         let scope = match &outcome.write_scope {
             Some(paths) if !paths.is_empty() => format!(" · scope={}", paths.join(",")),
             _ => String::new(),

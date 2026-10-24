@@ -67,10 +67,10 @@ fn match_line_numbers(text: &str, matches: &[(usize, &str)]) -> String {
 fn diagnose_missing_old(old: &str, from: &str) -> Option<String> {
     let normalized_old = old.replace("\r\n", "\n");
     let normalized_from = from.replace("\r\n", "\n");
-    if normalized_old != old || normalized_from != from {
-        if normalized_old.contains(&normalized_from) {
-            return Some("hint: line endings differ between CRLF and LF".into());
-        }
+    if (normalized_old != old || normalized_from != from)
+        && normalized_old.contains(&normalized_from)
+    {
+        return Some("hint: line endings differ between CRLF and LF".into());
     }
 
     let old_lines: Vec<&str> = old.lines().collect();

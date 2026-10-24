@@ -169,6 +169,29 @@ pub fn tool_result(name: &str, ok: bool, summary: &str, width: usize) -> String 
     }
 }
 
+/// Extract the last meaningful non-empty error line from a failed tool's output
+/// when it adds detail beyond `summary`.
+pub fn tool_error_tail(summary: &str, output: &str, width: usize) -> Option<String> {
+    let summary_clean = clean_text(summary);
+    let tail = output.lines().map(str::trim).rfind(|line| {
+        !line.is_empty()
+            && *line != "stdout:"
+            && *line != "stderr:"
+            && clean_text(line) != summary_clean
+    })?;
+    let formatted = format!("  ↳ {}", clean_text(tail));
+    Some(clip(&formatted, width))
+}
+
+fn format_tool_duration(elapsed: Duration) -> String {
+    let ms = elapsed.as_millis();
+    if ms > 0 && ms < 100 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    }
+}
+
 fn tool_detail(input: &Value) -> Option<String> {
     let object = input.as_object()?;
     for key in [
@@ -194,7 +217,7 @@ pub fn tool_timings(times: &HashMap<String, Duration>, width: usize) -> Option<S
     let parts = entries
         .into_iter()
         .take(6)
-        .map(|(name, elapsed)| format!("{name} {:.1}s", elapsed.as_secs_f64()))
+        .map(|(name, elapsed)| format!("{name} {}", format_tool_duration(*elapsed)))
         .collect::<Vec<_>>();
     Some(clip(
         &clean_text(&format!("tools · {}", parts.join(" · "))),
@@ -331,11 +354,26 @@ mod tests {
         let mut times = HashMap::new();
         times.insert("bash".to_string(), Duration::from_millis(1200));
         times.insert("write".to_string(), Duration::from_millis(400));
+        times.insert("read".to_string(), Duration::from_millis(25));
         let line = tool_timings(&times, 80).unwrap();
         assert!(line.starts_with("tools · bash 1.2s"), "{line}");
         assert!(line.contains("write 0.4s"), "{line}");
+        assert!(line.contains("read 25ms"), "{line}");
         assert!(tool_timings(&HashMap::new(), 80).is_none());
         assert!(tool_timings(&times, 18).unwrap().chars().count() <= 18);
+    }
+
+    #[test]
+    fn tool_error_tail_picks_last_meaningful_line() {
+        assert_eq!(
+            tool_error_tail(
+                "exit: 1",
+                "exit: 1\nstdout:\ncompiling...\nstderr:\nerror[E0425]: cannot find value `x`\n",
+                80
+            ),
+            Some("  ↳ error[E0425]: cannot find value `x`".to_string())
+        );
+        assert_eq!(tool_error_tail("exit: 1", "exit: 1\n", 80), None);
     }
 
     #[test]
