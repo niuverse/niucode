@@ -388,11 +388,20 @@ impl Toolbox {
         }
 
         if shown == 0 {
-            output.push_str(&format!("(no lines; file has {total} lines)\n"));
+            if total == 0 {
+                output.push_str("(no lines; file has 0 lines)\n");
+            } else {
+                output.push_str(&format!(
+                    "(no lines at offset {offset}; file has {total} lines)\n"
+                ));
+            }
         } else if start + shown < total {
+            let end_line = start + shown;
+            let next_offset = end_line + 1;
             output.push_str(&format!(
-                "... ({} more lines; use offset to continue)\n",
-                total - (start + shown)
+                "... ({} more lines, shown {}-{end_line} of {total}; use offset={next_offset} to continue)\n",
+                total - end_line,
+                start + 1,
             ));
         }
 
@@ -501,7 +510,10 @@ impl Toolbox {
             let path = temp_output_path(pid);
             fs::write(&path, &combined)
                 .with_context(|| format!("write full bash output {}", path.display()))?;
+            let total_lines = combined.lines().count();
             let (body, _) = tail_chars(&combined, BASH_MAX_BYTES);
+            let shown_lines = body.lines().count();
+            let omitted_lines = total_lines.saturating_sub(shown_lines);
             let qualifier = if stdout_truncated || stderr_truncated {
                 "captured output (capped at 8MB)"
             } else {
@@ -509,7 +521,7 @@ impl Toolbox {
             };
             return Ok((
                 format!(
-                    "exit: {status}\n{body}\n... ({qualifier}: {})\n",
+                    "exit: {status}\n{body}\n... ({omitted_lines} earlier lines omitted; {qualifier}: {})\n",
                     path.display()
                 ),
                 process,
@@ -643,7 +655,9 @@ impl Toolbox {
 
         let mut output = matches.join("\n");
         if truncated {
-            output.push_str(&format!("\n... (stopped at {max} matches)"));
+            output.push_str(&format!(
+                "\n... (stopped at {max} matches; narrow `path`, `include`, or `pattern` to see more)"
+            ));
         }
         Ok(output)
     }
@@ -674,6 +688,7 @@ impl Toolbox {
             .build();
 
         let mut paths = Vec::new();
+        let mut truncated = false;
         for entry in walker {
             let entry = entry.context("walk workspace")?;
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
@@ -681,10 +696,11 @@ impl Toolbox {
             }
             let relative = self.display_path(entry.path());
             if matcher.is_match(&relative) {
-                paths.push(relative);
                 if paths.len() >= max {
+                    truncated = true;
                     break;
                 }
+                paths.push(relative);
             }
         }
 
@@ -692,7 +708,13 @@ impl Toolbox {
             return Ok(format!("no files match {pattern:?}"));
         }
         paths.sort();
-        Ok(paths.join("\n"))
+        let mut output = paths.join("\n");
+        if truncated {
+            output.push_str(&format!(
+                "\n... (stopped at {max} files; narrow `pattern` to see more)"
+            ));
+        }
+        Ok(output)
     }
 
     fn resolve_existing_read(&self, raw: &str) -> Result<PathBuf> {
@@ -1121,6 +1143,78 @@ mod tests {
         assert!(result.output.contains("# Skill"));
         let _ = std::fs::remove_dir_all(workspace);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn read_grep_glob_bash_emit_structured_truncation_hints() {
+        let directory = temp_workspace("truncation-hints");
+        fs::write(directory.join("lines.txt"), "one\ntwo\nthree\nfour\nfive\n").expect("fixture");
+        fs::write(directory.join("other.txt"), "one\ntwo\n").expect("fixture");
+        let tools = test_toolbox(&directory);
+
+        let read = tools
+            .execute(
+                "read",
+                &json!({"path": "lines.txt", "offset": 2, "limit": 2}),
+            )
+            .await;
+        assert!(read.ok, "{}", read.output);
+        assert!(
+            read.output
+                .contains("... (2 more lines, shown 2-3 of 5; use offset=4 to continue)"),
+            "unexpected read output: {}",
+            read.output
+        );
+
+        let beyond = tools
+            .execute("read", &json!({"path": "lines.txt", "offset": 10}))
+            .await;
+        assert!(beyond.ok, "{}", beyond.output);
+        assert!(
+            beyond
+                .output
+                .contains("(no lines at offset 10; file has 5 lines)"),
+            "unexpected beyond output: {}",
+            beyond.output
+        );
+
+        let grep = tools
+            .execute("grep", &json!({"pattern": "o", "max_results": 1}))
+            .await;
+        assert!(grep.ok, "{}", grep.output);
+        assert!(
+            grep.output.contains(
+                "... (stopped at 1 matches; narrow `path`, `include`, or `pattern` to see more)"
+            ),
+            "unexpected grep output: {}",
+            grep.output
+        );
+
+        let glob = tools
+            .execute("glob", &json!({"pattern": "*.txt", "max_results": 1}))
+            .await;
+        assert!(glob.ok, "{}", glob.output);
+        assert!(
+            glob.output
+                .contains("... (stopped at 1 files; narrow `pattern` to see more)"),
+            "unexpected glob output: {}",
+            glob.output
+        );
+
+        let bash = tools
+            .execute(
+                "bash",
+                &json!({"command": "for i in $(seq 1 2500); do echo \"line-$i-0123456789\"; done"}),
+            )
+            .await;
+        assert!(bash.ok, "{}", bash.output);
+        assert!(
+            bash.output.contains("earlier lines omitted; full output:"),
+            "unexpected bash output: {}",
+            bash.output
+        );
+
+        fs::remove_dir_all(directory).expect("cleanup");
     }
 }
 
