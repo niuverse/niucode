@@ -137,6 +137,8 @@ struct SessionUiState {
     model: Option<String>,
     /// Runtime permission profile; None means the startup policy.
     permissions: Option<PermissionProfile>,
+    /// Cumulative token usage across the active session for footer display.
+    usage: Usage,
 }
 
 impl SessionUiState {
@@ -168,6 +170,12 @@ impl SessionUiState {
                 }
                 Event::InitProposal { content, .. } => {
                     state.init_proposal = Some(content.clone());
+                }
+                Event::TurnEnd { usage, .. } => {
+                    state.usage.input_tokens += usage.input_tokens;
+                    state.usage.output_tokens += usage.output_tokens;
+                    state.usage.cached_tokens += usage.cached_tokens;
+                    state.usage.reasoning_tokens += usage.reasoning_tokens;
                 }
                 _ => {}
             }
@@ -347,7 +355,7 @@ pub async fn run(
                 Some(label) => format!("niucode {} {label} ", theme::PROMPT),
                 None => format!("niucode {} ", theme::PROMPT),
             };
-            let footer = editor_footer(&state, config);
+            let footer = editor_footer_for_width(&state, config, plain_width());
             match editor.read_line(&raw_prompt, &footer, out)? {
                 Input::Line(line) | Input::Queue(line) => line,
                 Input::Details => {
@@ -846,7 +854,9 @@ pub async fn run(
                     );
                 }
                 run_turn_prompts(&hooks, &outcome);
-                history = project_history(&load(session.path())?.events)?;
+                let loaded = load(session.path())?;
+                state.usage = SessionUiState::from_events(&loaded.events).usage;
+                history = project_history(&loaded.events)?;
                 if state.goal_run {
                     if let Err(error) = goal_after_turn(
                         provider.as_ref(),
@@ -1025,6 +1035,7 @@ async fn handle_command(
             state.model = model;
             state.provider = provider;
             state.permissions = permissions;
+            state.usage = Usage::default();
             state.goal_run = false;
             state.goal_turns = 0;
             state.pending_prompt = None;
@@ -1777,6 +1788,9 @@ fn editor_footer(state: &SessionUiState, config: &AgentConfig) -> String {
         "{cwd} · {provider}/{model} · permissions {permission} · context {}",
         config.context.budget_tokens
     );
+    if state.usage.input_tokens > 0 && state.usage.cached_tokens > 0 {
+        footer.push_str(&format!(" · cache {}%", state.usage.cache_hit_percent()));
+    }
     if state.plan_mode {
         footer.push_str(" · plan on");
     }
@@ -1793,6 +1807,10 @@ fn editor_footer(state: &SessionUiState, config: &AgentConfig) -> String {
         ));
     }
     footer
+}
+
+fn editor_footer_for_width(state: &SessionUiState, config: &AgentConfig, width: usize) -> String {
+    crate::text_layout::clip(&editor_footer(state, config), width.max(16))
 }
 
 async fn run_init_generate(
@@ -3067,6 +3085,21 @@ mod tests {
         runtime.lock().unwrap().emergency_stop().expect("stop");
         let footer = editor_footer(&state, &config);
         assert!(footer.contains("computer off paused"), "{footer}");
+
+        let state_with_cache = SessionUiState::from_events(&[Event::TurnEnd {
+            finish_reason: None,
+            usage: Usage {
+                input_tokens: 1000,
+                output_tokens: 200,
+                cached_tokens: 750,
+                reasoning_tokens: 0,
+            },
+            ts: 1,
+        }]);
+        let footer = editor_footer(&state_with_cache, &config);
+        assert!(footer.contains("cache 75%"), "{footer}");
+        let clipped = editor_footer_for_width(&state_with_cache, &config, 28);
+        assert!(clipped.chars().count() <= 28, "{clipped}");
     }
 
     #[test]
