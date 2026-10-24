@@ -32,6 +32,7 @@ main { max-width:900px; margin:0 auto; padding:24px 18px 140px; }
 .log-tools { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
 .log-tools input { max-width:280px; padding:6px 9px; font-size:12px; }
 .log-tools span { color:var(--dim); font-size:11px; }
+.search-focus { outline:1px solid var(--accent); border-radius:4px; }
 aside { position:fixed; top:53px; bottom:70px; left:0; width:260px; overflow:auto; border-right:1px solid var(--border); padding:14px; background:var(--panel); display:none; }
 aside h4 { margin:14px 0 4px; color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.08em; }
 aside p { margin:2px 0; font-size:12px; color:var(--text); overflow-wrap:anywhere; white-space:pre-wrap; }
@@ -136,7 +137,7 @@ code { font-family:ui-monospace,monospace; color:#79c0ff; }
 <header><button id="toggle-context" class="chip" title="Toggle context" aria-label="Toggle product context">☰</button><b id="brand">niucode</b><span id="model" class="chip">model…</span><span id="cwd" class="chip">cwd…</span><span id="mode" class="chip">policy…</span><button id="computer" class="chip" title="Arm or stop computer use">computer off</button><span id="busy" class="chip" aria-live="polite">idle</span><span id="usage" class="chip" title="token usage this page">0 tok</span><button id="theme" class="chip" title="Toggle theme: dark / light / high contrast" aria-label="Toggle theme">☾</button><button id="download" class="chip" title="download session Markdown" aria-label="Download session Markdown">Download</button><span id="id" class="meta">loading…</span><span id="live" class="live" aria-live="polite">○ connecting</span></header>
 <div id="ctx-backdrop" hidden></div>
 <aside id="context" aria-label="Product context"><input id="ctx-filter" placeholder="Filter context…" autocomplete="off" aria-label="Filter product context"><div id="ctx-body"><div class="ctx-empty">loading context…</div></div></aside>
-<button id="latest" class="latest" hidden>↓ Latest</button><main><div class="log-tools"><input id="log-filter" placeholder="Search transcript…" autocomplete="off" aria-label="Search transcript"><span id="log-count"></span></div><div id="log" role="log" aria-live="polite" aria-label="Transcript"></div></main>
+<button id="latest" class="latest" hidden>↓ Latest</button><main><div class="log-tools"><input id="log-filter" placeholder="Search transcript… (Enter next, Shift+Enter prev)" autocomplete="off" aria-label="Search transcript"><button type="button" id="log-prev" class="chip" hidden title="Previous match (Shift+Enter)">↑</button><button type="button" id="log-next" class="chip" hidden title="Next match (Enter)">↓</button><span id="log-count"></span></div><div id="log" role="log" aria-live="polite" aria-label="Transcript"></div></main>
 <footer><div id="attachments" hidden aria-label="Pending attachments"></div><form id="composer"><button type="button" id="attach" title="Attach image or text file" aria-label="Attach image or text file">Attach</button><input id="file" type="file" multiple accept="image/png,image/jpeg,image/webp,text/plain,.md,.rs,.py,.sh,.toml,.json"><textarea id="prompt" maxlength="100000" rows="1" autocomplete="off" placeholder="Ask for a task…" aria-label="Prompt"></textarea><button id="send">Send</button></form><div id="cmd-menu" hidden></div><div id="status">Enter to send · Shift+Enter for a newline · ↑ history · bind 127.0.0.1</div></footer>
 <script>
 const log = document.getElementById('log');
@@ -156,7 +157,10 @@ function addUsage(usage) {
   usageTotals.output += usage.output_tokens || 0;
   usageTotals.cached += usage.cached_tokens || 0;
   const chip = document.getElementById('usage');
-  chip.textContent = compactTokens(usageTotals.input) + ' in / ' + compactTokens(usageTotals.output) + ' out';
+  const cachePct = usageTotals.input > 0 && usageTotals.cached > 0
+    ? ' · ' + Math.floor(usageTotals.cached * 100 / usageTotals.input) + '% cache'
+    : '';
+  chip.textContent = compactTokens(usageTotals.input) + ' in / ' + compactTokens(usageTotals.output) + ' out' + cachePct;
   chip.title = usageTotals.cached + ' cached input tokens';
 }
 let turnStart = null, turnTimer = null, turnPhase = 'working';
@@ -264,7 +268,10 @@ function addCopyButtons(root) {
 function renderToolCall(e) {
   const card = node('details','tool-card');
   card.appendChild(node('summary',null,'→ '+e.name+' '+JSON.stringify(e.input||{}).slice(0,140)));
-  if (e.input) card.appendChild(node('pre',null,JSON.stringify(e.input,null,2)));
+  if (e.input) {
+    card.appendChild(node('pre','copyable',JSON.stringify(e.input,null,2)));
+    addCopyButtons(card);
+  }
   log.appendChild(card);
 }
 function renderToolResult(e) {
@@ -428,20 +435,50 @@ async function loadContext() {
 }
 loadContext();
 setInterval(loadContext, 15000);
+let searchMatches = [], searchIndex = 0;
+function updateSearchFocus(scroll = false) {
+  for (const item of document.getElementById('log').children) item.classList.remove('search-focus');
+  const query = document.getElementById('log-filter').value.trim();
+  const prevBtn = document.getElementById('log-prev');
+  const nextBtn = document.getElementById('log-next');
+  const total = document.getElementById('log').children.length;
+  prevBtn.hidden = nextBtn.hidden = !query || searchMatches.length < 2;
+  if (!query) {
+    document.getElementById('log-count').textContent = '';
+    return;
+  }
+  if (!searchMatches.length) {
+    document.getElementById('log-count').textContent = '0 / ' + total;
+    return;
+  }
+  searchIndex = ((searchIndex % searchMatches.length) + searchMatches.length) % searchMatches.length;
+  const target = searchMatches[searchIndex];
+  target.classList.add('search-focus');
+  if (scroll && target.scrollIntoView) target.scrollIntoView({ block: 'nearest' });
+  document.getElementById('log-count').textContent = (searchIndex + 1) + ' of ' + searchMatches.length + ' (' + total + ')';
+}
+function stepTranscriptMatch(delta) {
+  if (!searchMatches.length) return;
+  searchIndex += delta;
+  updateSearchFocus(true);
+}
 function filterTranscript() {
   const query = document.getElementById('log-filter').value.trim().toLowerCase();
-  let visible = 0, total = 0;
+  searchMatches = [];
+  searchIndex = 0;
   for (const item of document.getElementById('log').children) {
-    total += 1;
     const match = !query || item.textContent.toLowerCase().includes(query);
     item.hidden = !match;
-    if (match) visible += 1;
+    if (query && match) searchMatches.push(item);
   }
-  document.getElementById('log-count').textContent = query ? visible + ' / ' + total : '';
+  updateSearchFocus(false);
 }
 document.getElementById('log-filter').addEventListener('input', filterTranscript);
+document.getElementById('log-prev').onclick = () => stepTranscriptMatch(-1);
+document.getElementById('log-next').onclick = () => stepTranscriptMatch(1);
 document.getElementById('log-filter').addEventListener('keydown', event => {
   if (event.key === 'Escape') { document.getElementById('log-filter').value = ''; filterTranscript(); }
+  else if (event.key === 'Enter') { event.preventDefault(); stepTranscriptMatch(event.shiftKey ? -1 : 1); }
 });
 function filterContext() {
   const query = document.getElementById('ctx-filter').value.trim().toLowerCase();

@@ -2801,6 +2801,10 @@ mod tests {
         assert!(INDEX.contains("expires in"));
         assert!(INDEX.contains("switchThread"));
         assert!(INDEX.contains("session_switched"));
+        assert!(INDEX.contains("stepTranscriptMatch"));
+        assert!(INDEX.contains("id=\"log-prev\""));
+        assert!(INDEX.contains("id=\"log-next\""));
+        assert!(INDEX.contains("% cache"));
         assert!(!INDEX.contains("http://"));
         assert!(!INDEX.contains("https://"));
     }
