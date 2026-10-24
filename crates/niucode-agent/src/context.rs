@@ -18,6 +18,7 @@ const MIN_KEEP_EVENTS: usize = 8;
 const MAX_ACTIONS: usize = 12;
 const MAX_CHANGED_FILES: usize = 20;
 const MAX_FAILURES: usize = 3;
+const MAX_VERIFICATIONS: usize = 8;
 const GOAL_CHARS: usize = 1_500;
 const ASSISTANT_CHARS: usize = 1_000;
 const FAILURE_CHARS: usize = 240;
@@ -353,6 +354,7 @@ pub fn build_handoff(events: &[Event], keep_recent_turns: usize) -> Result<Hando
 
     let mut changed_files = BTreeSet::new();
     let mut actions = Vec::new();
+    let mut verifications = Vec::new();
     let mut last_assistant = None;
     for event in prefix {
         match event {
@@ -383,6 +385,20 @@ pub fn build_handoff(events: &[Event], keep_recent_turns: usize) -> Result<Hando
                         status
                     ));
                 }
+            }
+            Event::Verification {
+                command, ok, step, ..
+            } => {
+                let status = if *ok { "pass" } else { "fail" };
+                let step_tag = step
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| format!(" [{s}]"))
+                    .unwrap_or_default();
+                verifications.push(format!(
+                    "- {status}{step_tag} `{}`",
+                    one_line(command, ACTION_CHARS)
+                ));
             }
             Event::ToolResult { .. } => {}
             _ => {}
@@ -454,6 +470,16 @@ pub fn build_handoff(events: &[Event], keep_recent_turns: usize) -> Result<Hando
                 break;
             }
             summary.push_str(&format!("- {path}\n"));
+        }
+    }
+
+    if !verifications.is_empty() {
+        let verifications =
+            verifications.split_off(verifications.len().saturating_sub(MAX_VERIFICATIONS));
+        summary.push_str("\n## Verifications\n");
+        for verification in &verifications {
+            summary.push_str(verification);
+            summary.push('\n');
         }
     }
 
@@ -809,6 +835,37 @@ mod tests {
             "failed writes must not be reported as changed files"
         );
         assert!(handoff.summary.contains("## Next step"));
+    }
+
+    #[test]
+    fn handoff_preserves_verification_steps_and_outcomes() {
+        let events = vec![
+            user("complete step 1 and 2"),
+            assistant("running checks"),
+            Event::Verification {
+                command: "cargo test -p niuse-core".into(),
+                ok: true,
+                output: "ok".into(),
+                step: Some("p-1".into()),
+                ts: 3,
+            },
+            Event::Verification {
+                command: "cargo clippy".into(),
+                ok: false,
+                output: "warning".into(),
+                step: Some("p-2".into()),
+                ts: 4,
+            },
+            user("continue step 2"),
+            assistant("working on step 2"),
+        ];
+
+        let handoff = build_handoff(&events, 1).expect("handoff");
+        assert!(handoff.summary.contains("## Verifications"));
+        assert!(handoff
+            .summary
+            .contains("- pass [p-1] `cargo test -p niuse-core`"));
+        assert!(handoff.summary.contains("- fail [p-2] `cargo clippy`"));
     }
 
     #[test]
