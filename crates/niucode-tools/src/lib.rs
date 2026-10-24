@@ -1216,6 +1216,75 @@ mod tests {
 
         fs::remove_dir_all(directory).expect("cleanup");
     }
+
+    #[tokio::test]
+    async fn edit_reports_whitespace_and_duplicate_line_diagnostics() {
+        let directory = temp_workspace("edit-diagnostics");
+        fs::write(
+            directory.join("code.rs"),
+            "fn alpha() {\n    let value = 1;\n    println!(\"{value}\");\n}\nfn beta() {\n    let value = 1;\n}\n",
+        )
+        .expect("fixture");
+        let tools = test_toolbox(&directory);
+        tools.execute("read", &json!({"path": "code.rs"})).await;
+
+        let indent_mismatch = tools
+            .execute(
+                "edit",
+                &json!({
+                    "path": "code.rs",
+                    "old": "  let value = 1;\n  println!(\"{value}\");",
+                    "new": "    let value = 2;"
+                }),
+            )
+            .await;
+        assert!(!indent_mismatch.ok);
+        assert!(
+            indent_mismatch
+                .output
+                .contains("hint: lines 2-3 match when leading/trailing whitespace is ignored"),
+            "unexpected indent diagnostic: {}",
+            indent_mismatch.output
+        );
+
+        let anchor_hint = tools
+            .execute(
+                "edit",
+                &json!({
+                    "path": "code.rs",
+                    "old": "fn beta() {\n    let wrong = 99;",
+                    "new": "fn beta() {}"
+                }),
+            )
+            .await;
+        assert!(!anchor_hint.ok);
+        assert!(
+            anchor_hint
+                .output
+                .contains("hint: first line matches near line 5"),
+            "unexpected anchor diagnostic: {}",
+            anchor_hint.output
+        );
+
+        let non_unique = tools
+            .execute(
+                "edit",
+                &json!({
+                    "path": "code.rs",
+                    "old": "    let value = 1;",
+                    "new": "    let value = 2;"
+                }),
+            )
+            .await;
+        assert!(!non_unique.ok);
+        assert!(
+            non_unique.output.contains("at lines 2, 6"),
+            "unexpected non-unique diagnostic: {}",
+            non_unique.output
+        );
+
+        fs::remove_dir_all(directory).expect("cleanup");
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

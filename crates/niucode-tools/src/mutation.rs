@@ -49,6 +49,60 @@ pub fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn match_line_numbers(text: &str, matches: &[(usize, &str)]) -> String {
+    let mut nums: Vec<String> = matches
+        .iter()
+        .take(5)
+        .map(|(offset, _)| {
+            let line = text[..*offset].bytes().filter(|&b| b == b'\n').count() + 1;
+            line.to_string()
+        })
+        .collect();
+    if matches.len() > 5 {
+        nums.push("...".into());
+    }
+    nums.join(", ")
+}
+
+fn diagnose_missing_old(old: &str, from: &str) -> Option<String> {
+    let normalized_old = old.replace("\r\n", "\n");
+    let normalized_from = from.replace("\r\n", "\n");
+    if normalized_old != old || normalized_from != from {
+        if normalized_old.contains(&normalized_from) {
+            return Some("hint: line endings differ between CRLF and LF".into());
+        }
+    }
+
+    let old_lines: Vec<&str> = old.lines().collect();
+    let from_lines: Vec<&str> = from.lines().collect();
+    if !from_lines.is_empty() && from_lines.len() <= old_lines.len() {
+        for start in 0..=(old_lines.len() - from_lines.len()) {
+            let trimmed_match = old_lines[start..start + from_lines.len()]
+                .iter()
+                .zip(from_lines.iter())
+                .all(|(a, b)| a.trim() == b.trim());
+            if trimmed_match && from_lines.iter().any(|l| !l.trim().is_empty()) {
+                let first_line = start + 1;
+                let last_line = start + from_lines.len();
+                return Some(format!(
+                    "hint: lines {first_line}-{last_line} match when leading/trailing whitespace is ignored; check exact indentation with read offset={first_line}"
+                ));
+            }
+        }
+    }
+
+    if let Some(anchor) = from_lines.iter().map(|l| l.trim()).find(|l| !l.is_empty()) {
+        if let Some(idx) = old_lines.iter().position(|line| line.trim() == anchor) {
+            let line_no = idx + 1;
+            return Some(format!(
+                "hint: first line matches near line {line_no}; use read offset={line_no} to inspect exact surrounding lines"
+            ));
+        }
+    }
+
+    None
+}
+
 struct Observed {
     version: Version,
     ranges: Vec<Range<usize>>,
@@ -177,11 +231,15 @@ impl Toolbox {
                 }
                 let matches: Vec<_> = old.match_indices(from).collect();
                 if matches.is_empty() {
+                    if let Some(hint) = diagnose_missing_old(old, from) {
+                        bail!("old string not found in {raw} ({hint})");
+                    }
                     bail!("old string not found in {raw}");
                 }
                 if matches.len() != 1 {
+                    let lines = match_line_numbers(old, &matches);
                     bail!(
-                        "old string is not unique in {raw}; found {} matches",
+                        "old string is not unique in {raw}; found {} matches (at lines {lines}; include more surrounding context)",
                         matches.len()
                     );
                 }
