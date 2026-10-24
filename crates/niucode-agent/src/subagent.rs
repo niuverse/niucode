@@ -641,7 +641,9 @@ mod tests {
             session: PathBuf::from("/tmp/sub.jsonl"),
         }];
         let rendered = render_outcomes(&outcomes);
-        assert!(rendered.contains("worker · 2 turn(s) · 1000 in / 120 out · 75% cached · scope=src/lib.rs,tests/"));
+        assert!(rendered.contains(
+            "worker · 2 turn(s) · 1000 in / 120 out · 75% cached · scope=src/lib.rs,tests/"
+        ));
         assert!(rendered.contains("updated src/lib.rs"));
     }
 }
