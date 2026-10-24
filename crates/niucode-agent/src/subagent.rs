@@ -52,6 +52,10 @@ struct TaskSpec {
 
 struct SubagentOutcome {
     ok: bool,
+    profile: SubagentProfile,
+    write_scope: Option<Vec<String>>,
+    turns: u64,
+    usage: Usage,
     summary: String,
     session: std::path::PathBuf,
 }
@@ -213,13 +217,22 @@ async fn run_tasks(
             } else {
                 summary
             };
-            (id, task.prompt, session_path, ok, summary, turns, usage)
+            (
+                id,
+                task.profile,
+                task.write_scope,
+                session_path,
+                ok,
+                summary,
+                turns,
+                usage,
+            )
         },
     );
 
     let results = join_all(futures).await;
     let mut outcomes = Vec::with_capacity(results.len());
-    for (id, _task, session, ok, summary, turns, usage) in results {
+    for (id, profile, write_scope, session, ok, summary, turns, usage) in results {
         parent_session.append(&Event::SubagentResult {
             id: id.clone(),
             call_id: call.id.clone(),
@@ -232,6 +245,10 @@ async fn run_tasks(
         })?;
         outcomes.push(SubagentOutcome {
             ok,
+            profile,
+            write_scope,
+            turns,
+            usage,
             summary,
             session,
         });
@@ -541,10 +558,24 @@ fn summarize(text: &str) -> String {
 fn render_outcomes(outcomes: &[SubagentOutcome]) -> String {
     let mut rendered = format!("subagent: {} task(s)\n", outcomes.len());
     for (index, outcome) in outcomes.iter().enumerate() {
+        let cache_pct = if outcome.usage.input_tokens > 0 {
+            (outcome.usage.cached_tokens.saturating_mul(100)) / outcome.usage.input_tokens
+        } else {
+            0
+        };
+        let scope = match &outcome.write_scope {
+            Some(paths) if !paths.is_empty() => format!(" · scope={}", paths.join(",")),
+            _ => String::new(),
+        };
         rendered.push_str(&format!(
-            "[{}] {} · {}\n    log: {}\n",
+            "[{}] {} ({} · {} turn(s) · {} in / {} out · {}% cached{scope}) · {}\n    log: {}\n",
             index + 1,
             if outcome.ok { "ok" } else { "error" },
+            outcome.profile.as_str(),
+            outcome.turns,
+            outcome.usage.input_tokens,
+            outcome.usage.output_tokens,
+            cache_pct,
             outcome.summary,
             outcome.session.display()
         ));
@@ -591,6 +622,27 @@ mod tests {
         assert_eq!(summary.chars().count(), MAX_SUMMARY_CHARS + 1);
         assert!(summary.ends_with('…'));
         assert_eq!(summarize("  "), "(no final summary)");
+    }
+
+    #[test]
+    fn render_outcomes_includes_cache_percentage_and_write_scope() {
+        let outcomes = vec![SubagentOutcome {
+            ok: true,
+            profile: SubagentProfile::Worker,
+            write_scope: Some(vec!["src/lib.rs".into(), "tests/".into()]),
+            turns: 2,
+            usage: Usage {
+                input_tokens: 1_000,
+                output_tokens: 120,
+                cached_tokens: 750,
+                reasoning_tokens: 0,
+            },
+            summary: "updated src/lib.rs".into(),
+            session: PathBuf::from("/tmp/sub.jsonl"),
+        }];
+        let rendered = render_outcomes(&outcomes);
+        assert!(rendered.contains("worker · 2 turn(s) · 1000 in / 120 out · 75% cached · scope=src/lib.rs,tests/"));
+        assert!(rendered.contains("updated src/lib.rs"));
     }
 }
 
